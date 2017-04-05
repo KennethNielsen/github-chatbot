@@ -1,4 +1,7 @@
 
+
+from __future__ import print_function
+
 import re
 import requests
 import socket
@@ -21,62 +24,109 @@ def send_to_irc(text):
 class ArchiveParser(object):
     """Git archive feed parser"""
 
-    template = (
-        '### \x0308{author}\x03 {action_description} \x0308{subject_id}\x03 ###\n'
-        '# \x0312URL: {url}\x03\n'
-        '# \x02Message\x02:\n'
-        '{message}\n'
-        '####################'
-    )
+    templates = {
+        'issue_comment_event': (
+            '### {author} {action_description} \x0308issue {issue_id}\x03 ###\n'
+            '# {issue_url}\n'
+            '# \x02Message\x02:\n'
+            '{comment_clipped}\n'
+            '####################'
+        ),
+        'watch_event': (
+            '### {author} {action} watching the '
+            '\x0312{repo}\x03 repository \x02{emoji}\x03'
+        ),
+        'issues_event': (
+            '### \x0308issue {issue_id}\x03 ({issue_url}) '
+            'was {action} by {author}'
+        ),
+    }
+    extract_info_template = {
+        'author': ('actor', 'display_login'),
+        'issue_url': ('payload', 'issue', 'html_url'),
+        'issue_id': ('payload', 'issue', 'number'),
+        'comment': ('payload', 'comment', 'body'),
+        'action': ('payload', 'action'),
+        'repo': ('repo', 'name'),
+    }
+    colors = {
+        'author': '\x0310',
+        'issue_url': '\x0312'
+        
+    }
+    action_colors = {
+        'opened': '\x0303{}\x03',
+        'closed': '\x0304{}\x03',
+    }
 
     def __init__(self, repo):
         self.repo = repo
 
+    def _extract_info_dict(self, event_dict):
+        """Extract information from event dict into flat dict"""
+        #pprint(event_dict)
+        info_dict = {}
+        for info_name, keys in self.extract_info_template.items():
+            try:
+                value = event_dict
+                for key in keys:
+                    value = value[key]
+                if info_name in self.colors:
+                    info_dict[info_name] = self.colors[info_name] + value + '\x03'
+                else:
+                    info_dict[info_name] = value
+            except KeyError:
+                info_dict[info_name] = None
+        if info_dict['comment'] is not None:
+            info_dict['comment_clipped'] = '\n'.join(["# " + l for l in info_dict['comment'].split('\r\n')[:10]])
+        return info_dict
+
     def format_issue_comment_event(self, event):
         """Format an issue comment"""
-        pprint(event)
-        content = {'action_description': 'commented on'}
-        content['author'] = event['actor']['display_login']
-        payload = event['payload']
-        content['url'] = payload['issue']['html_url']
-        content['subject_id'] = 'issue {}'.format(payload['issue']['number'])
-        comment = payload['comment']['body']
-        content['message'] = '\n'.join(["# " + l for l in comment.split('\r\n')[:10]])
-        
-        output = self.template.format(**content)
-        return output
+        info_dict = self._extract_info_dict(event)
+        info_dict.update({'action_description': 'commented on'})
+        return self.templates['issue_comment_event'].format(**info_dict)
 
     def format_issue_comment(self, event):
         """Format an issue comment"""
-        return event['type']
+        raise NotImplementedError()
 
     def format_issues_event(self, event):
         """Format an issue comment"""
-        return event['type']
+        info_dict = self._extract_info_dict(event)
+        if info_dict['action'] in self.action_colors:
+            info_dict['action'] = self.action_colors[info_dict['action']].format(info_dict['action'])
+        return self.templates['issues_event'].format(**info_dict)
+        
 
     def format_watch_event(self, event):
-        """Format an issue comment"""
-        return event['type']
+        """Format an watch event"""
+        info_dict = self._extract_info_dict(event)
+        if event['payload']['action'] == 'started':
+            info_dict.update({'emoji': '\o/'})
+        else:
+            info_dict.update({'emoji': ':('})
+        return self.templates['watch_event'].format(**info_dict)
 
     def format_pull_request_event(self, event):
         """Format an issue comment"""
-        return event['type']
+        raise NotImplementedError()
 
     def format_pull_request_review_comment_event(self, event):
         """Format an issue comment"""
-        return event['type']
+        raise NotImplementedError()
 
     def format_gollum_event(self, event):
         """Format an issue comment"""
-        return event['type']
+        raise NotImplementedError()
 
     def format_push_event(self, event):
         """Format an issue comment"""
-        return event['type']
+        raise NotImplementedError()
 
     def format_fork_event(self, event):
         """Format an issue comment"""
-        return event['type']
+        raise NotImplementedError()
 
     def get_archive_events(self):
         """Get the archive events"""
@@ -98,11 +148,16 @@ class ArchiveParser(object):
                 found.add(event_type)
                 format_method_name = "format_" + camel_to_snake(event_type)
                 format_method = getattr(self, format_method_name)
-                formatted = format_method(event)
+                try:
+                    formatted = format_method(event)
+                except NotImplementedError:
+                    print('###\n', event['type'], 'not implemented')
+                    continue
                 
-                print("###\n" + formatted)
-                send_to_irc(formatted)
-                break
+                print("###\n" + repr(formatted))
+                if event['type'] == 'IssuesEvent':
+                    send_to_irc(formatted)
+                #break
             break
             page += 1
 

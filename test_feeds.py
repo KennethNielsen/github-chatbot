@@ -37,7 +37,7 @@ class ArchiveParser(object):
             '\x0312{repo}\x03 repository \x02{emoji}\x03'
         ),
         'issues_event': (
-            '### \x0308issue {issue_id}\x03 ({issue_url}) '
+            '### \x0308Issue {issue_id}\x03 ({issue_url}) '
             'was {action} by {author}'
         ),
     }

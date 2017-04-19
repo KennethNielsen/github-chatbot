@@ -10,8 +10,8 @@ from collections import deque
 
 from twisted.words.protocols import irc
 from twisted.internet import protocol, reactor
-from feedcache import Cache
 
+from github_events import GithubArchiveEventsParser
 
 COMMAND_RE = re.compile('PyExpLabSysBot:? *(.*)', re.IGNORECASE)
 
@@ -41,11 +41,12 @@ class PelsBot(irc.IRCClient):
         print("Joined %s." % (channel,))
 
         # Make the client known to the github
-        self.factory.github.irc_client = self
-        reactor.callLater(0.01, self.factory.github.check_in)
-        reactor.callLater(0.01, self._send_line)
+        self.event_parser = GithubArchiveEventsParser("SoCo/SoCo", reactor, self)
+        self.event_parser.watch_for_events(first_call=True)
+        self._send_line()
 
     def privmsg(self, user, channel, msg):
+        """Recieved msg"""
         print("Got message", msg)
         if not msg.startswith("PyExpLabSysBot"):
             return
@@ -110,8 +111,7 @@ class PelsBot(irc.IRCClient):
 class PelsBotFactory(protocol.ClientFactory):
     protocol = PelsBot
 
-    def __init__(self, channel, github, nickname='PyExpLabSysBot'):
-        self.github = github
+    def __init__(self, channel, nickname='PyExpLabSysBot'):
         self.channel = channel
         self.nickname = nickname
 
@@ -123,52 +123,10 @@ class PelsBotFactory(protocol.ClientFactory):
         print("Could not connect: %s" % (reason,))
 
 
-class GitHub(object):
-
-    template = (
-        '\x0308commit {commit}\x03\n'
-        '\x0312Author: {author}\x03\n'
-        '\x0312Date  : {datetime}\x03\n'
-        '\x02Message\x02: {message}\n'
-    )
-
-    def __init__(self, iteration_time=15):
-        self.feedcache = Cache({}, timeToLiveSeconds=1)
-        self.iteration_time = iteration_time
-        self.stop = False
-        self.irc_client = None
-
-        # Form the dict of known commits
-        self.known_commits = set()
-        feed = self.feedcache.fetch('https://github.com/KennethNielsen/issue_irc_tes/commits/master.atom')
-        for entry in feed['entries']:
-            self.known_commits.add(entry['id'])
-
-    def check(self):
-        feed = self.feedcache.fetch('https://github.com/KennethNielsen/issue_irc_tes/commits/master.atom')
-        print('Got feed with {} entries'.format(len(feed['entries'])))
-        for entry in reversed(feed['entries']):
-            if entry['id'] not in self.known_commits:
-                formatted = self.format_entry(entry)
-                #print(formatted)
-                self.known_commits.add(entry['id'])
-                reactor.callFromThread(self.irc_client.send_multiline_msg, formatted.encode('utf-8'), prefix="# ")
-        reactor.callLater(self.iteration_time, self.check_in)
-
-    def check_in(self):
-        print("check_in")
-        reactor.callInThread(self.check)
-
-    def format_entry(self, entry):
-        entry['commit'] = entry['id'].split('/')[-1]
-        entry['datetime'] = time.strftime('%Y-%m-%d %H:%M:%S', entry['updated_parsed'])
-        entry['message'] = entry['summary'].split(">", 1)[1].replace('</pre>', '')
-        return self.template.format(**entry)
         
         
 if __name__ == "__main__":
-    github = GitHub()
-    reactor.connectTCP('irc.freenode.net', 6667, PelsBotFactory('#sniksnak', github=github))
+    reactor.connectTCP('irc.freenode.net', 6667, PelsBotFactory('#sniksnak',))
     
     try:
         print('before reactor')

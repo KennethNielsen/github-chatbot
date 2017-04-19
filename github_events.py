@@ -6,6 +6,11 @@ from time import sleep
 import re
 import socket
 from pprint import pprint
+import json
+
+from twisted.web.client import Agent, readBody
+from twisted.web.http_headers import Headers
+
 
 FIRST_CAP_RE = re.compile('(.)([A-Z][a-z]+)')
 ALL_CAP_RE = re.compile('([a-z0-9])([A-Z])')
@@ -21,8 +26,8 @@ def send_to_irc(text):
     SOCK.sendto(text, ('localhost', 9999))
 
 
-class ArchiveParser(object):
-    """Git archive feed parser"""
+class GithubArchiveEventsParser(object):
+    """Github archive feed parser"""
 
     templates = {
         'commit_comment_event': (
@@ -90,10 +95,15 @@ class ArchiveParser(object):
         'closed': '\x0304{}\x03',
     }
 
-    def __init__(self, repo, reactor=None, chatbot):
+    def __init__(self, repo, reactor=None, chatbot=None):
         self.repo = repo
         self.reactor = reactor
         self.chatbot = chatbot
+
+        self.feed_link = "https://api.github.com/repos/{}/events?per_page=100".format(repo)
+        self.agent = None
+        if reactor:
+            self.agent = Agent(reactor)
 
     def _extract_info_dict(self, event_dict):
         """Extract information from event dict into flat dict"""
@@ -193,18 +203,61 @@ class ArchiveParser(object):
             info_dict.update({'emoji': ':('})
         return self.templates['watch_event'].format(**info_dict)
 
-    def watch_for_events(self):
+    ## High level methods
+    def watch_for_events(self, first_call=False, etag=None):
         """Main method for continuously looking for events"""
-        pass
+        print("watch for events")
+        headers = {'User-Agent': ['Github chat bot']}
+        if etag is not None:
+            headers.update({'If-None-Match': etag})
+        d = self.agent.request(
+            'GET',
+            self.feed_link,
+            Headers(headers),
+            None,
+        )
+        d.addCallback(self.parse_feed)
+
+    def parse_feed(self, response):
+        """Callback for when the feed has been retrived"""
+        print("parse feed reponse", response.code)
+
+        if response.code not in (304, 200):
+            print("error getting the feed, try again in 5 min")
+            self.reactor.callLater(300, self.watch_for_events, False, etag)
+            return
+
+        headers = dict(response.headers.getAllRawHeaders())
+        etag = headers['ETag']
+
+        # If not modified
+        if response.code == 304:
+            print("no new content, try again in 60 s")
+            self.reactor.callLater(60, self.watch_for_events, False, etag)
+            return
+
+        # ddd
+        polling_interval = int(headers['X-Poll-Interval'][0])
+        d = readBody(response)
+        d.addCallback(self.parse_body, polling_interval, etag)
+        
+
+    def parse_body(self, body, polling_interval, etag):
+        print("Got body", polling_interval)
+        events = json.loads(body)
+        print(len(events))
+        print("reponse parsed, call again later after appropriate polling "
+              "intervall", polling_interval)
+        self.reactor.callLater(polling_interval, self.watch_for_events, False,
+                               etag)
+
 
     def test_get_archive_events(self):
         """Get the archive events"""
         import requests
-        page = 1
         found = set()
         while True:
-            request = "https://api.github.com/repos/{}/events?page={}&per_page=100".format(self.repo, page)
-            print("get page", page)
+            request = "https://api.github.com/repos/{}/events?per_page=100".format(self.repo)
             r = requests.get(request)
             events = r.json()
 
@@ -233,16 +286,23 @@ class ArchiveParser(object):
                 #    send_to_irc(formatted)
                 #    sleep(2)
                 #break
-            page += 1
         print(found)
 
 
 
 def main(repo):
     """Main function, repo is "owner/reponame" string"""
-    achive_parser = ArchiveParser(repo)
+    achive_parser = GithubArchiveEventsParser(repo)
     achive_parser.test_get_archive_events()
     #get_archive_events(repo)
 
+def main_twisted(repo):
+    from twisted.internet import reactor
+    archive_parser = GithubArchiveEventsParser(repo, reactor=reactor)
+    reactor.callWhenRunning(archive_parser.watch_for_events)
+    reactor.run()
 
-main("SoCo/SoCo")
+
+if __name__ == '__main__':
+    #main("SoCo/SoCo")
+    main_twisted("SoCo/SoCo")

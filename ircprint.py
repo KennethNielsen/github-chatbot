@@ -10,7 +10,6 @@ from collections import deque
 
 from twisted.words.protocols import irc
 from twisted.internet import protocol, reactor
-from feedcache import Cache
 
 from twisted.internet.protocol import DatagramProtocol
 from twisted.internet import reactor

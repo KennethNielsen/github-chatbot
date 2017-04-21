@@ -10,6 +10,10 @@ import json
 
 from twisted.web.client import Agent, readBody
 from twisted.web.http_headers import Headers
+from twisted.logger import textFileLogObserver, globalLogBeginner, Logger
+
+log = Logger(namespace="EVENTS")
+log.info("events")
 
 
 FIRST_CAP_RE = re.compile('(.)([A-Z][a-z]+)')
@@ -37,7 +41,7 @@ class GithubArchiveEventsParser(object):
             '{comment_clipped}'
         ),
         'fork_event': (
-            '{author} forked SoCo \\o/'
+            '{author} forked {repo_name} \\o/'
         ),
         'gollum_event': (
             '{author} {wiki_action} the wiki page \x0312{wiki_url}\x03'
@@ -66,6 +70,9 @@ class GithubArchiveEventsParser(object):
         ),
         'push_event': (
             '{author} pushed {size} commits to {ref} now at \x0308{head}\x03'
+        ),
+        'requested_issue': (
+            '{state} \x0308{type} #{number}\x03 \x02"{title}"\x02 by \x0309{author}\x03{labels} \x0312{html_url}\x03'
         ),
     }
     extract_info_template = {
@@ -97,10 +104,13 @@ class GithubArchiveEventsParser(object):
 
     def __init__(self, repo, reactor=None, chatbot=None):
         self.repo = repo
+        _, self.repo_name = repo.split('/')
         self.reactor = reactor
         self.chatbot = chatbot
+        self.last_known_id = None
 
         self.feed_link = "https://api.github.com/repos/{}/events?per_page=100".format(repo)
+        self.issue_link = "https://api.github.com/repos/{}/issues/{{}}".format(repo)
         self.agent = None
         if reactor:
             self.agent = Agent(reactor)
@@ -122,7 +132,7 @@ class GithubArchiveEventsParser(object):
 
         # Strip unicode out of comments
         if info_dict['comment'] is not None:
-            info_dict['comment'] = info_dict['comment'].encode('ascii', 'ignore').decode('ascii')
+            info_dict['comment'] = info_dict['comment'].strip().encode('ascii', 'ignore').decode('ascii')
 
         if info_dict['comment'] is not None:
             info_dict['comment_clipped'] = '\n'.join(["# " + l for l in info_dict['comment'].split('\r\n')[:10]])
@@ -140,6 +150,7 @@ class GithubArchiveEventsParser(object):
     def format_fork_event(self, event):
         """Format a fork event"""
         info_dict = self._extract_info_dict(event)
+        info_dict['repo_name'] = self.repo_name
         return self.templates['fork_event'].format(**info_dict)
     
     # https://developer.github.com/v3/activity/events/types/#gollumevent
@@ -158,7 +169,6 @@ class GithubArchiveEventsParser(object):
     # https://developer.github.com/v3/activity/events/types/#issuecommentevent
     def format_issue_comment_event(self, event):
         """Format an issue comment"""
-        pprint(event)
         info_dict = self._extract_info_dict(event)
         info_dict.update({'action_description': 'commented on'})
         return self.templates['issue_comment_event'].format(**info_dict)
@@ -182,7 +192,6 @@ class GithubArchiveEventsParser(object):
     # https://developer.github.com/v3/activity/events/types/#pullrequestreviewcommentevent
     def format_pull_request_review_comment_event(self, event):
         """Format a pull request review comment event"""
-        #pprint(event)
         info_dict = self._extract_info_dict(event)
         info_dict.update({'action_description': 'commented on'})
         return self.templates['pull_request_review_comment_event'].format(**info_dict)
@@ -206,7 +215,7 @@ class GithubArchiveEventsParser(object):
     ## High level methods
     def watch_for_events(self, first_call=False, etag=None):
         """Main method for continuously looking for events"""
-        print("watch for events")
+        log.debug("Watch for events")
         headers = {'User-Agent': ['Github chat bot']}
         if etag is not None:
             headers.update({'If-None-Match': etag})
@@ -216,14 +225,14 @@ class GithubArchiveEventsParser(object):
             Headers(headers),
             None,
         )
-        d.addCallback(self.parse_feed)
+        d.addCallback(self.request_callback)
 
-    def parse_feed(self, response):
+    def request_callback(self, response):
         """Callback for when the feed has been retrived"""
-        print("parse feed reponse", response.code)
+        log.debug("request callback")
 
         if response.code not in (304, 200):
-            print("error getting the feed, try again in 5 min")
+            log.debug("error getting the feed, try again in 5 min")
             self.reactor.callLater(300, self.watch_for_events, False, etag)
             return
 
@@ -232,26 +241,98 @@ class GithubArchiveEventsParser(object):
 
         # If not modified
         if response.code == 304:
-            print("no new content, try again in 60 s")
+            log.debug("no new content (304), try again in 60 s")
             self.reactor.callLater(60, self.watch_for_events, False, etag)
             return
 
-        # ddd
+        # Set body callback
         polling_interval = int(headers['X-Poll-Interval'][0])
         d = readBody(response)
-        d.addCallback(self.parse_body, polling_interval, etag)
+        d.addCallback(self.body_received_callback, polling_interval, etag)
         
 
-    def parse_body(self, body, polling_interval, etag):
-        print("Got body", polling_interval)
+    def body_received_callback(self, body, polling_interval, etag):
+        """Body received callback"""
+        log.debug("Got body")
         events = json.loads(body)
-        print(len(events))
-        print("reponse parsed, call again later after appropriate polling "
-              "intervall", polling_interval)
+
+        # This is the first time ever
+        if self.last_known_id is None:
+            self.act_on_event(events[0])
+        else:
+            seen_last_known = False
+            for event in reversed(events):
+                if seen_last_known:
+                    self.act_on_event(event)
+                elif event['id'] == self.last_known_id:
+                    seen_last_known = True
+            
+        log.debug("reponse parsed, call again later after appropriate polling "
+                  "intervall {pol_int}", pol_int=polling_interval)
         self.reactor.callLater(polling_interval, self.watch_for_events, False,
                                etag)
 
+    def act_on_event(self, event):
+        """Act on an event"""
+        self.last_known_id = event['id']
 
+        event_type = event['type']
+        format_method_name = "format_" + camel_to_snake(event_type)
+        try:
+            format_method = getattr(self, format_method_name)
+            formatted_msg = format_method(event)
+        except AttributeError:
+            formatted_msg = "I don't know how to handle event type {}. Tell "\
+                            "TLE to fix me.".format(event_type)
+
+        self.chatbot.send_multiline_msg(formatted_msg)
+        
+    def show_issue(self, issue_number, in_detail=False):
+        """Get information about an issue"""
+        log.debug("Show issue {issue}", issue=issue_number)
+        headers = {'User-Agent': ['dGithub chat bot']}
+        d = self.agent.request(
+            'GET',
+            self.issue_link.format(issue_number),
+            Headers(headers),
+            None,
+        )
+        d.addCallback(self.issue_request_callback, issue_number)
+        
+    def issue_request_callback(self, response, issue_number):
+        """Callback for when the feed has been retrived"""
+        log.debug("request callback")
+
+        headers = dict(response.headers.getAllRawHeaders())
+        
+        if response.code != 200:
+            log.debug("error getting the issue {issue} {code}", issue=issue_number, code=response.code)
+            return
+
+        d = readBody(response)
+        d.addCallback(self.issue_body_received_callback)
+
+    def issue_body_received_callback(self, body):
+        """Body received callback"""
+        log.debug("Got body")
+        info = json.loads(body)
+        if info['labels']:
+            label_names = (label['name'] for label in info['labels'])
+            info['labels'] = ' ({})'.format(', '.join(label_names))
+        else:
+            info['labels'] = ''
+        info['type'] = "pull request" if 'pull_request' in info else "issue"
+        info['author'] = info['user']['login']
+        for state, color in (("open", "\x0303"), ("closed", "\x0304")):
+            if state == info['state']:
+                info['state'] = color + info['state'].title() + '\x03'
+                break
+        else:
+            info['state'] = info['state'].title()
+        formatted_msg = self.templates['requested_issue'].format(**info)
+        self.chatbot.send_multiline_msg(formatted_msg)
+        
+    ## Test archive parsing
     def test_get_archive_events(self):
         """Get the archive events"""
         import requests
@@ -297,9 +378,15 @@ def main(repo):
     #get_archive_events(repo)
 
 def main_twisted(repo):
+    import sys
     from twisted.internet import reactor
+    from twisted.logger import textFileLogObserver, globalLogBeginner, Logger
+    globalLogBeginner.beginLoggingTo([textFileLogObserver(sys.stdout)])
     archive_parser = GithubArchiveEventsParser(repo, reactor=reactor)
-    reactor.callWhenRunning(archive_parser.watch_for_events)
+    #reactor.callWhenRunning(archive_parser.watch_for_events)
+    reactor.callWhenRunning(archive_parser.show_issue, 493)
+    #for n in range(1, 10):
+    #    reactor.callWhenRunning(archive_parser.show_issue, n)
     reactor.run()
 
 

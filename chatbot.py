@@ -14,13 +14,25 @@ from twisted.internet import protocol, reactor
 from twisted.logger import textFileLogObserver, globalLogBeginner, Logger
 globalLogBeginner.beginLoggingTo([textFileLogObserver(sys.stdout)])
 
+from twisted.words.protocols.irc import assembleFormattedText
+from twisted.words.protocols.irc import attributes as A
+
+
 from github_events import GithubArchiveEventsParser
 
 log = Logger(namespace="CHATBOT")
 log.info("Started")
 
 
+commands = {}
+
 class PelsBot(irc.IRCClient):
+
+    def command(method):
+        command_name = method.__name__.split("_", 1)[1]
+        help_string = method.__doc__
+        commands[command_name] = help_string
+        return method
 
     def _get_nickname(self):
         return self.factory.nickname
@@ -98,23 +110,51 @@ class PelsBot(irc.IRCClient):
 
         self.say(self.factory.channel, msg)
         self.line_history.append(now)
-        reactor.callLater(0.01, self._send_line)
+        reactor.callLater(0.2, self._send_line)
 
     def say_to_user(self, user, reply):
         """Convinience say to user command"""
         self.line_queue.put(user + ": " + reply)
 
+    @command
     def command_hi(self, user, command):
-        """The hi command"""
-        self.say_to_user(user, "Hi")
+        """Says hi"""
+        self.say_to_user(user, 'Hi')
 
+    @command
     def command_help(self, user, command):
-        """The help command"""
+        """Bot help. Format: \"help\" or \"help COMMAND\""""
+        log.debug('help command: {command}', command=command)
+        command = command.strip()
+        if ' ' in command:
+            _, subject = command.split(' ', 1)
+            try:
+                msg = commands[subject]
+            except KeyError:
+                msg = 'Sorry. I don\'t know anything about: ' + subject
+            self.say_to_user(user, msg)
+            return
+
         msg = (
             'I\'m the friendly bot for {}. '
-            'I will keep you updated on repository events and I understand the commands: hi, help'
+            'I will keep you updated on repository events and I understand the '
+            'commands: hi, help and issue'
         ).format(self.factory.repo)
         self.say_to_user(user, msg)
+
+    @command
+    def command_issue(self, user, command):
+        """Displays a single issue. Format: \"issue 47\" or \"issue #47\""""
+        match = ISS_COMMAND_RE.match(command)
+        if not match:
+            self.say_to_user(user, 'Bad issue command. The format is "issue 123" or "issue #123')
+            return
+        issue_number = match.group(1)
+        self.event_parser.show_issue(issue_number)
+
+    def say(self, *args, **kwargs):
+        log.debug("say {args} {kwargs}", args=repr(args), kwargs=repr(kwargs))
+        irc.IRCClient.say(self, *args, **kwargs)
                 
 
 
@@ -139,6 +179,7 @@ if __name__ == "__main__":
     log.debug(str(sys.argv))
     COMMAND_RE = re.compile('{}:? *(.*)'.format(bot_name), re.IGNORECASE)
     ISS_RE = re.compile('.*#(\d+).*', re.DOTALL)
+    ISS_COMMAND_RE = re.compile('issue #?(\d+)')
 
     reactor.connectTCP('irc.freenode.net', 6667, PelsBotFactory(channel, repo, bot_name))
     

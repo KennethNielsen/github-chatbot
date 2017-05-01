@@ -5,12 +5,17 @@ from __future__ import print_function
 from time import sleep
 import re
 import socket
-from pprint import pprint
+from pprint import pprint, pformat
 import json
 
 from twisted.web.client import Agent, readBody
 from twisted.web.http_headers import Headers
 from twisted.logger import textFileLogObserver, globalLogBeginner, Logger
+from twisted.words.protocols.irc import assembleFormattedText
+from twisted.words.protocols.irc import attributes as A
+
+# Color alias
+fg = A.fg
 
 log = Logger(namespace="EVENTS")
 log.info("events")
@@ -34,53 +39,60 @@ class GithubArchiveEventsParser(object):
     """Github archive feed parser"""
 
     templates = {
-        'commit_comment_event': (
-            '{author} commented on \x0308commit {commit_id}\x03\n'
-            '{comment_url}\n'
-            '\x02Message\x02:\n'
-            '{comment_clipped}'
-        ),
-        'fork_event': (
-            '{author} forked {repo_name} \\o/'
-        ),
-        'gollum_event': (
-            '{author} {wiki_action} the wiki page \x0312{wiki_url}\x03'
-        ),
-        'issue_comment_event': (
-            '{author} {action_description} \x0308issue {issue_id}\x03\n'
-            '{issue_url}\n'
-            '\x02Message\x02:\n'
-            '{comment_clipped}'
-        ),
-        'issues_event': (
-            '\x0308Issue {issue_id}\x03 ({issue_url}) '
-            'was {action} by {author}'
-        ),
-        'watch_event': (
-            '{author} {action} watching the '
-            '\x0312{repo}\x03 repository \x02{emoji}\x03'
-        ),
-        'pull_request_event': (
-            '\x0308Pull request {pull_request_id}\x03 ({pull_request_url}) '
-            'was {action} by {author}'
-        ),
-        'pull_request_review_comment_event': (
-            '{author} made a review comment on \x0308pull request {pull_request_id}\x03 '
-            '({pull_request_url})'
-        ),
-        'push_event': (
-            '{author} pushed {size} commits to {ref} now at \x0308{head}\x03'
-        ),
-        'requested_issue': (
-            '{state} \x0308{type} #{number}\x03 \x02"{title}"\x02 by \x0309{author}\x03{labels} \x0312{html_url}\x03'
-        ),
+        'commit_comment_event': [
+            fg.lightGreen['{author}'], ' commented on ', fg.yellow['commit {commit_id}']
+        ],
+        'fork_event': [
+            fg.lightGreen['{author}'], ' forked {repo_name} ', A.bold['\\o/']
+        ],
+        'gollum_event': [
+            '{all_gollum_events}'
+        ],
+        'gollum_event_component': [
+            fg.lightGreen['{author}'], ' {wiki_action} the wiki page ',
+            fg.lightBlue['{wiki_url}']
+        ],
+        'issue_comment_event': [
+            fg.lightGreen['{author}'], ' commented on ',
+            fg.yellow['issue {issue_id} '], A.bold['"{issue_title}" '],
+            fg.lightBlue['{comment_url}'],
+        ],
+        'issues_event': [
+            fg.yellow['Issue {issue_id} '], A.bold['"{issue_title}"'], ' (',
+            fg.lightBlue['{issue_url}'], ') was ', '{action}', ' by ',
+            fg.lightGreen['{author}']
+        ],
+        'watch_event': [
+            fg.lightGreen['{author}'], ' {action} watching the ',
+            fg.lightBlue['{repo}'], ' repository ', A.bold['{emoji}']
+        ],
+        'pull_request_event': [
+            fg.yellow['Pull request {pull_request_id}'],
+            A.bold[' "{pull_request_title}"'], ' (', fg.lightBlue['{pull_request_url}'],
+            ') was ', '{action}', ' by ', fg.lightGreen['{author}']
+        ],
+        'pull_request_review_comment_event': [
+            fg.lightGreen['{author}'], ' made a review comment on ',
+            fg.yellow['pull request {pull_request_id}'],
+            A.bold[' "{pull_request_title}"'], ' (', fg.lightBlue['{comment_url}'], ')'
+        ],
+        'push_event': [
+            fg.lightGreen['{author}'], ' pushed {size} commits to ',
+            fg.lightBlue['{ref}'], ', now at ', fg.yellow['{head}']
+        ],
+        'requested_issue': [
+            '{state} ', fg.yellow['{type} #{number}'], A.bold[' "{title}" '], 'by ',
+            fg.lightGreen['{author}'], '{labels} ', fg.lightBlue['{html_url}']
+        ],
     }
     extract_info_template = {
         'author': ('actor', 'display_login'),
         'issue_url': ('payload', 'issue', 'html_url'),
         'issue_id': ('payload', 'issue', 'number'),
+        'issue_title': ('payload', 'issue', 'title'),
         'pull_request_url': ('payload', 'pull_request', 'html_url'),
         'pull_request_id': ('payload', 'pull_request', 'number'),
+        'pull_request_title': ('payload', 'pull_request', 'title'),
         'commit_id': ('payload', 'comment', 'commit_id'),
         'comment_url': ('payload', 'comment', 'html_url'),
         'comment': ('payload', 'comment', 'body'),
@@ -90,16 +102,9 @@ class GithubArchiveEventsParser(object):
         'ref': ('payload', 'ref'),
         'head': ('payload', 'head'),
     }
-    colors = {
-        'author': '\x0309',
-        'issue_url': '\x0312',
-        'pull_request_url': '\x0312',
-        'ref': '\x0312',
-        
-    }
     action_colors = {
-        'opened': '\x0303{}\x03',
-        'closed': '\x0304{}\x03',
+        'opened': 'green',
+        'closed': 'lightRed',
     }
 
     def __init__(self, repo, reactor=None, chatbot=None):
@@ -117,100 +122,55 @@ class GithubArchiveEventsParser(object):
 
     def _extract_info_dict(self, event_dict):
         """Extract information from event dict into flat dict"""
-        info_dict = {}
+        info_dict = {'repo_name': self.repo_name}
         for info_name, keys in self.extract_info_template.items():
             try:
                 value = event_dict
                 for key in keys:
                     value = value[key]
-                if info_name in self.colors:
-                    info_dict[info_name] = self.colors[info_name] + value + '\x03'
-                else:
-                    info_dict[info_name] = value
+                info_dict[info_name] = value
             except KeyError:
                 info_dict[info_name] = None
 
-        # Strip unicode out of comments
-        if info_dict['comment'] is not None:
-            info_dict['comment'] = info_dict['comment'].strip().encode('ascii', 'ignore').decode('ascii')
+        # Strip unicode out of comments and titles
+        for item_name in ('comment', 'issue_title', 'pull_request_title'):
+            if info_dict[item_name] is not None:
+                info_dict[item_name] =\
+                    info_dict[item_name].strip().encode('ascii', 'ignore').decode('ascii')
 
         if info_dict['comment'] is not None:
-            info_dict['comment_clipped'] = '\n'.join(["# " + l for l in info_dict['comment'].split('\r\n')[:10]])
+            info_dict['comment_clipped'] = '\n'.join(
+                ["# " + l for l in info_dict['comment'].split('\r\n')[:10]]
+            )
         return info_dict
 
-    ### Methods for formatting each of the event types we support
-
-    # https://developer.github.com/v3/activity/events/types/#commitcommentevent
-    def format_commit_comment_event(self, event):
-        """Format a commit comment event"""
-        info_dict = self._extract_info_dict(event)
-        return self.templates['commit_comment_event'].format(**info_dict)
-
-    # https://developer.github.com/v3/activity/events/types/#forkevent
-    def format_fork_event(self, event):
-        """Format a fork event"""
-        info_dict = self._extract_info_dict(event)
-        info_dict['repo_name'] = self.repo_name
-        return self.templates['fork_event'].format(**info_dict)
+    ### Methods for customizing information before formatting it into templates
     
-    # https://developer.github.com/v3/activity/events/types/#gollumevent
-    def format_gollum_event(self, event):
-        """Format an gollum comment"""
-        info_dict = self._extract_info_dict(event)
+    def customize_gollum_event(self, event, info_dict):
+        """Customize the gollum event data"""
         page_updates = []
         for page in event['payload']['pages']:
             info_dict['wiki_action'] = page['action']
             info_dict['wiki_url'] = page['html_url']
-            page_updates.append(
-                self.templates['gollum_event'].format(**info_dict)
-            )
-        return '\n'.join(page_updates)
-    
-    # https://developer.github.com/v3/activity/events/types/#issuecommentevent
-    def format_issue_comment_event(self, event):
-        """Format an issue comment"""
-        info_dict = self._extract_info_dict(event)
-        info_dict.update({'action_description': 'commented on'})
-        return self.templates['issue_comment_event'].format(**info_dict)
+            template = assembleFormattedText(A.normal[self.templates['gollum_event_component']])
+            page_update_string = template.format(**info_dict)
+            page_updates.append(page_update_string)
+        info_dict['all_gollum_events'] = '\n'.join(page_updates)
 
-    # https://developer.github.com/v3/activity/events/types/#issuesevent
-    def format_issues_event(self, event):
-        """Format an issue comment"""
-        info_dict = self._extract_info_dict(event)
-        if info_dict['action'] in self.action_colors:
-            info_dict['action'] = self.action_colors[info_dict['action']].format(info_dict['action'])
-        return self.templates['issues_event'].format(**info_dict)
-
-    # https://developer.github.com/v3/activity/events/types/#pullrequestevent
-    def format_pull_request_event(self, event):
-        """Format a pull request event"""
-        info_dict = self._extract_info_dict(event)
-        if info_dict['action'] in self.action_colors:
-            info_dict['action'] = self.action_colors[info_dict['action']].format(info_dict['action'])
-        return self.templates['pull_request_event'].format(**info_dict)
-
-    # https://developer.github.com/v3/activity/events/types/#pullrequestreviewcommentevent
-    def format_pull_request_review_comment_event(self, event):
-        """Format a pull request review comment event"""
-        info_dict = self._extract_info_dict(event)
-        info_dict.update({'action_description': 'commented on'})
-        return self.templates['pull_request_review_comment_event'].format(**info_dict)
-
-    # https://developer.github.com/v3/activity/events/types/#pushevent
-    def format_push_event(self, event):
-        """Format a push comment"""
-        info_dict = self._extract_info_dict(event)
-        return self.templates['push_event'].format(**info_dict)
-
-    # https://developer.github.com/v3/activity/events/types/#watchevent
-    def format_watch_event(self, event):
-        """Format an watch event"""
-        info_dict = self._extract_info_dict(event)
+    def customize_watch_event(self, event, info_dict):
+        """Customize the watch event data"""
         if event['payload']['action'] == 'started':
             info_dict.update({'emoji': '\o/'})
         else:
             info_dict.update({'emoji': ':('})
-        return self.templates['watch_event'].format(**info_dict)
+
+    def handle_action_colors(self, info_dict, color_template):
+        """Change the color templates to accommodate action colors"""
+        for index in range(len(color_template)):
+            if color_template[index] == '{action}':
+                action = info_dict['action']
+                color_factory = getattr(fg, self.action_colors[action])
+                color_template[index] = color_factory['{action}']
 
     ## High level methods
     def watch_for_events(self, first_call=False, etag=None):
@@ -258,6 +218,11 @@ class GithubArchiveEventsParser(object):
 
         # This is the first time ever
         if self.last_known_id is None:
+            #know_types = set()
+            #for event in events:
+            #    if event['type'] not in know_types:
+            #        self.act_on_event(event)
+            #        know_types.add(event['type'])
             self.act_on_event(events[0])
         else:
             seen_last_known = False
@@ -276,15 +241,23 @@ class GithubArchiveEventsParser(object):
         """Act on an event"""
         self.last_known_id = event['id']
 
-        event_type = event['type']
-        format_method_name = "format_" + camel_to_snake(event_type)
-        try:
-            format_method = getattr(self, format_method_name)
-            formatted_msg = format_method(event)
-        except AttributeError:
-            formatted_msg = "I don't know how to handle event type {}. Tell "\
-                            "TLE to fix me.".format(event_type)
+        # Form the event name, extract relevant information into the info_dict, fetch and
+        # possibly customize color template
+        event_type = camel_to_snake(event['type'])
+        with open(event_type, 'w') as file_:
+            file_.write(pformat(event))
+        info_dict = self._extract_info_dict(event)
+        color_template = self.templates[event_type]
+        self.handle_action_colors(info_dict, color_template)
 
+        # Check if this type needs custom modification
+        customize_method = getattr(self, 'customize_' + event_type, None)
+        if customize_method is not None:
+            customize_method(event, info_dict)  # modifies info_dict
+
+        # Assemble the color template and format information into it
+        template = assembleFormattedText(A.normal[color_template])
+        formatted_msg = template.format(**info_dict)
         self.chatbot.send_multiline_msg(formatted_msg)
         
     def show_issue(self, issue_number, in_detail=False):
@@ -329,7 +302,11 @@ class GithubArchiveEventsParser(object):
                 break
         else:
             info['state'] = info['state'].title()
-        formatted_msg = self.templates['requested_issue'].format(**info)
+        color_template = assembleFormattedText(
+            A.normal[self.templates['requested_issue']]
+        )
+        formatted_msg = color_template.format(**info)
+        
         self.chatbot.send_multiline_msg(formatted_msg)
         
     ## Test archive parsing

@@ -50,7 +50,7 @@ class PelsBot(irc.IRCClient):
 
         # Make the client known to the github
         self.event_parser = GithubArchiveEventsParser(self.factory.repo, reactor, self)
-        self.event_parser.watch_for_events(first_call=True)
+        self.event_parser.watch_for_events()
         self._send_line()
 
     def privmsg(self, user, channel, msg):
@@ -175,8 +175,8 @@ class PelsBotFactory(protocol.ClientFactory):
 
         
 if __name__ == "__main__":
-    _, bot_name, channel, repo = sys.argv
     log.debug(str(sys.argv))
+    _, bot_name, channel, repo = sys.argv
     COMMAND_RE = re.compile('{}:? *(.*)'.format(bot_name), re.IGNORECASE)
     ISS_RE = re.compile('.*#(\d+).*', re.DOTALL)
     ISS_COMMAND_RE = re.compile('issue #?(\d+)')

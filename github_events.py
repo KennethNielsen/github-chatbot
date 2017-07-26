@@ -116,6 +116,7 @@ class GithubArchiveEventsParser(object):
 
         self.feed_link = "https://api.github.com/repos/{}/events?per_page=100".format(repo)
         self.issue_link = "https://api.github.com/repos/{}/issues/{{}}".format(repo)
+        self.headers = {'User-Agent': ['Github chat bot']}
         self.agent = None
         if reactor:
             self.agent = Agent(reactor)
@@ -173,19 +174,26 @@ class GithubArchiveEventsParser(object):
                 color_template[index] = color_factory['{action}']
 
     ## High level methods
-    def watch_for_events(self, first_call=False, etag=None):
+    def watch_for_events(self, etag=None):
         """Main method for continuously looking for events"""
         log.debug("Watch for events")
         headers = {'User-Agent': ['Github chat bot']}
         if etag is not None:
-            headers.update({'If-None-Match': etag})
+            self.headers.update({'If-None-Match': etag})
         d = self.agent.request(
             'GET',
             self.feed_link,
-            Headers(headers),
+            Headers(self.headers),
             None,
         )
         d.addCallback(self.request_callback)
+        d.addErrback(self.request_errback)
+
+    def request_errback(self, failure, *args, **kwargs):
+        """Error back for get internet page request"""
+        log.debug("Request error back, grumble!")
+        log.err(failure)
+        self.reactor.callLater(300, self.watch_for_events)
 
     def request_callback(self, response):
         """Callback for when the feed has been retrived"""
@@ -193,7 +201,7 @@ class GithubArchiveEventsParser(object):
 
         if response.code not in (304, 200):
             log.debug("error getting the feed, try again in 5 min")
-            self.reactor.callLater(300, self.watch_for_events, False, etag)
+            self.reactor.callLater(300, self.watch_for_events)
             return
 
         headers = dict(response.headers.getAllRawHeaders())
@@ -202,14 +210,14 @@ class GithubArchiveEventsParser(object):
         # If not modified
         if response.code == 304:
             log.debug("no new content (304), try again in 60 s")
-            self.reactor.callLater(60, self.watch_for_events, False, etag)
+            self.reactor.callLater(60, self.watch_for_events, etag)
             return
 
         # Set body callback
         polling_interval = int(headers['X-Poll-Interval'][0])
         d = readBody(response)
         d.addCallback(self.body_received_callback, polling_interval, etag)
-        
+        d.addErrback(self.body_received_errback)
 
     def body_received_callback(self, body, polling_interval, etag):
         """Body received callback"""
@@ -234,8 +242,12 @@ class GithubArchiveEventsParser(object):
             
         log.debug("reponse parsed, call again later after appropriate polling "
                   "intervall {pol_int}", pol_int=polling_interval)
-        self.reactor.callLater(polling_interval, self.watch_for_events, False,
-                               etag)
+        self.reactor.callLater(polling_interval, self.watch_for_events, etag)
+
+    def body_received_errback(self, failure, *args, **kwargs):
+        """Body received error back"""
+        log.debug("Body received error back. THIS SHOULD NOT HAPPEN")
+        log.err(failure)
 
     def act_on_event(self, event):
         """Act on an event"""
@@ -271,6 +283,7 @@ class GithubArchiveEventsParser(object):
             None,
         )
         d.addCallback(self.issue_request_callback, issue_number)
+        d.addErrback(self.issue_request_errback)
         
     def issue_request_callback(self, response, issue_number):
         """Callback for when the feed has been retrived"""
@@ -280,10 +293,13 @@ class GithubArchiveEventsParser(object):
         
         if response.code != 200:
             log.debug("error getting the issue {issue} {code}", issue=issue_number, code=response.code)
+            message = "Fetching issue information fails right now, try again later"
+            self.chatbot.send_multiline_msg(message)
             return
 
         d = readBody(response)
         d.addCallback(self.issue_body_received_callback)
+        d.addErrback(self.issue_request_errback)
 
     def issue_body_received_callback(self, body):
         """Body received callback"""
@@ -308,6 +324,13 @@ class GithubArchiveEventsParser(object):
         formatted_msg = color_template.format(**info)
         
         self.chatbot.send_multiline_msg(formatted_msg)
+
+    def issue_request_errback(self, failure, *args, **kwargs):
+        """Error back for when an issue request fails"""
+        log.debug("Issue request error back")
+        log.err(failure)
+        message = "Fetching issue information fails right now, try again later"
+        self.chatbot.send_multiline_msg(message)
         
     ## Test archive parsing
     def test_get_archive_events(self):

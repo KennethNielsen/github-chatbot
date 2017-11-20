@@ -192,7 +192,7 @@ class GithubArchiveEventsParser(object):
     def request_errback(self, failure, *args, **kwargs):
         """Error back for get internet page request"""
         log.debug("Request error back, grumble!")
-        log.err(failure)
+        #log.error('', failure)
         self.reactor.callLater(300, self.watch_for_events)
 
     def request_callback(self, response):
@@ -247,7 +247,7 @@ class GithubArchiveEventsParser(object):
     def body_received_errback(self, failure, *args, **kwargs):
         """Body received error back"""
         log.debug("Body received error back. THIS SHOULD NOT HAPPEN")
-        log.err(failure)
+        #log.err(failure)
 
     def act_on_event(self, event):
         """Act on an event"""
@@ -256,8 +256,8 @@ class GithubArchiveEventsParser(object):
         # Form the event name, extract relevant information into the info_dict, fetch and
         # possibly customize color template
         event_type = camel_to_snake(event['type'])
-        with open(event_type, 'w') as file_:
-            file_.write(pformat(event))
+        #with open(event_type, 'w') as file_:
+        #    file_.write(pformat(event))
         info_dict = self._extract_info_dict(event)
         color_template = self.templates[event_type]
         self.handle_action_colors(info_dict, color_template)
@@ -328,7 +328,7 @@ class GithubArchiveEventsParser(object):
     def issue_request_errback(self, failure, *args, **kwargs):
         """Error back for when an issue request fails"""
         log.debug("Issue request error back")
-        log.err(failure)
+        #log.err(failure)
         message = "Fetching issue information fails right now, try again later"
         self.chatbot.send_multiline_msg(message)
         

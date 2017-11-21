@@ -84,6 +84,19 @@ class GithubArchiveEventsParser(object):
             '{state} ', fg.yellow['{type} #{number}'], A.bold[' "{title}" '], 'by ',
             fg.lightGreen['{author}'], '{labels} ', fg.lightBlue['{html_url}']
         ],
+        'release_event': [
+            ' -=# ', fg.lightGreen['{author}'], ' just release version ',
+            fg.yellow['{release_name}'], A.bold[' \o/\o/\o/' ], ' #=-\n',
+            ' -=# ', fg.lightBlue['{release_url}'], ' #=-',
+        ],
+        'create_event': [
+            fg.lightGreen['{author}'], ' created ', fg.yellow['{ref_type} {ref}']
+        ],
+        'default_event': [
+            fg.lightRed['##### WARNING. '],
+            'Unkown event of type: \"{event_type}\". Ask TLE to fix me.',
+        ],
+
     }
     extract_info_template = {
         'author': ('actor', 'display_login'),
@@ -100,7 +113,11 @@ class GithubArchiveEventsParser(object):
         'repo': ('repo', 'name'),
         'size': ('payload', 'size'),
         'ref': ('payload', 'ref'),
+        'ref_type': ('payload', 'ref_type'),
         'head': ('payload', 'head'),
+        'release_name': ('payload', 'release', 'name'),
+        'release_url': ('payload', 'release', 'html_url'),
+        'event_type': ('type',)
     }
     action_colors = {
         'opened': 'green',

@@ -25,6 +25,14 @@ log.info("Started")
 
 
 commands = {}
+JOIN_COMMENT = (
+    "I'm back!\n"
+    "I recently learned to handle release and create events and I got a "
+    "default message for unhandled events (instead of stalling) and I now "
+    "show the first 4 lines of issue comments. Comments and feedback go to "
+    "TLE.\nI'll show you the last event from github, since I don't know how "
+    "long I was out."
+    )
 
 class PelsBot(irc.IRCClient):
 
@@ -45,6 +53,8 @@ class PelsBot(irc.IRCClient):
     def joined(self, channel):
         # init stuff here
         self.line_queue = Queue()
+        for line in JOIN_COMMENT.split('\n'):
+            self.line_queue.put(line)
         self.line_history = deque(maxlen=5)
         log.info("Joined {channel}", channel=channel)
 

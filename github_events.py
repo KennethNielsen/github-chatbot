@@ -55,7 +55,7 @@ class GithubArchiveEventsParser(object):
         'issue_comment_event': [
             fg.lightGreen['{author}'], ' commented on ',
             fg.yellow['issue {issue_id} '], A.bold['"{issue_title}" '],
-            fg.lightBlue['{comment_url}'],
+            fg.lightBlue['{comment_url}'], '\n',
         ],
         'issues_event': [
             fg.yellow['Issue {issue_id} '], A.bold['"{issue_title}"'], ' (',
@@ -156,10 +156,18 @@ class GithubArchiveEventsParser(object):
                 info_dict[item_name] =\
                     info_dict[item_name].strip().encode('ascii', 'ignore').decode('ascii')
 
+        # Form a list of lines items for the color template, for the
+        # case where we want to add a comment to the message
         if info_dict['comment'] is not None:
-            info_dict['comment_clipped'] = '\n'.join(
-                ["# " + l for l in info_dict['comment'].split('\r\n')[:10]]
-            )
+            lines = []
+            for line in info_dict['comment'].split('\r\n'):
+                #log.debug("LINE:{}:LINE:{}:LINE".format(repr(line), repr(line.strip())))
+                if line.strip() != '':
+                    lines += [A.bold['COMMENT: '], line + '\n']
+            # We clip to 4 lines (two list elements for each line), so
+            # the entire thing can be contained in a burst
+            info_dict['comment_clipped'] = lines[:8]
+            log.debug(str(info_dict['comment_clipped']).replace('{', '?').replace('}', '?'))
         return info_dict
 
     ### Methods for customizing information before formatting it into templates
@@ -243,11 +251,6 @@ class GithubArchiveEventsParser(object):
 
         # This is the first time ever
         if self.last_known_id is None:
-            #know_types = set()
-            #for event in events:
-            #    if event['type'] not in know_types:
-            #        self.act_on_event(event)
-            #        know_types.add(event['type'])
             self.act_on_event(events[0])
         else:
             seen_last_known = False
@@ -264,7 +267,7 @@ class GithubArchiveEventsParser(object):
     def body_received_errback(self, failure, *args, **kwargs):
         """Body received error back"""
         log.debug("Body received error back. THIS SHOULD NOT HAPPEN")
-        #log.err(failure)
+        log.debug(str(failure))
 
     def act_on_event(self, event):
         """Act on an event"""
@@ -273,10 +276,15 @@ class GithubArchiveEventsParser(object):
         # Form the event name, extract relevant information into the info_dict, fetch and
         # possibly customize color template
         event_type = camel_to_snake(event['type'])
-        #with open(event_type, 'w') as file_:
-        #    file_.write(pformat(event))
+        log.debug("Event type: {event_type}", event_type=event_type)
         info_dict = self._extract_info_dict(event)
-        color_template = self.templates[event_type]
+        color_template = self.templates.get(
+            event_type, self.templates['default_event']
+        )
+
+        # Add comment to certain event types
+        if event_type == 'issue_comment_event':
+            color_template = list(color_template) + info_dict['comment_clipped']
         self.handle_action_colors(info_dict, color_template)
 
         # Check if this type needs custom modification

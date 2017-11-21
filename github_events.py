@@ -154,7 +154,12 @@ class GithubArchiveEventsParser(object):
         for item_name in ('comment', 'issue_title', 'pull_request_title'):
             if info_dict[item_name] is not None:
                 info_dict[item_name] =\
-                    info_dict[item_name].strip().encode('ascii', 'ignore').decode('ascii')
+                    info_dict[item_name].strip().\
+                    encode('ascii', 'ignore').decode('ascii')
+                # We later want to do a format into these strings, so
+                # escape any { and } already in there
+                info_dict[item_name] = \
+                    info_dict[item_name].replace('{', '{{').replace('}', '}}')
 
         # Form a list of lines items for the color template, for the
         # case where we want to add a comment to the message
@@ -294,6 +299,8 @@ class GithubArchiveEventsParser(object):
 
         # Assemble the color template and format information into it
         template = assembleFormattedText(A.normal[color_template])
+        pprint(template)
+        pprint(info_dict)
         formatted_msg = template.format(**info_dict)
         self.chatbot.send_multiline_msg(formatted_msg)
         

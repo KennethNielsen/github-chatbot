@@ -27,9 +27,7 @@ log.info("Started")
 commands = {}
 JOIN_COMMENT = (
     "I'm back!\n"
-    "I recently learned to handle release and create events and I got a "
-    "default message for unhandled events (instead of stalling) and I now "
-    "show the first 4 lines of issue comments. Comments and feedback go to "
+    "I recently learned to handle delete events. Comments and feedback go to "
     "TLE.\nI'll show you the last event from github, since I don't know how "
     "long I was out."
     )

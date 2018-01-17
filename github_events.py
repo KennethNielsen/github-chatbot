@@ -42,6 +42,10 @@ class GithubArchiveEventsParser(object):
         'commit_comment_event': [
             fg.lightGreen['{author}'], ' commented on ', fg.yellow['commit {commit_id}']
         ],
+        'delete_event': [
+            fg.lightGreen['{author}'], fg.lightRed[' deleted '],
+            fg.yellow['{ref_type} {ref}']
+        ],
         'fork_event': [
             fg.lightGreen['{author}'], ' forked {repo_name} ', A.bold['\\o/']
         ],
